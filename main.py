@@ -5,9 +5,6 @@ from datetime import datetime, timedelta
 import threading
 import logging
 import time
-import psycopg2
-
-import os
 
 API_TOKEN = '7680225007:AAFx0-YC99FAgpVAYgWpeu_1fOyq9RoxJEY'
 # ADMIN_ID = '1321982385'  # Замените на ID администратора
@@ -18,18 +15,22 @@ SUPPORT_LINK = 'https://t.me/+-F6RH6Pun_sxYTQy'  # Правильная ссыл
 
 bot = telebot.TeleBot(API_TOKEN)
 
+# Подключение к базе данных SQLite
+conn = sqlite3.connect('subscriptions.db', check_same_thread=False)
+cursor = conn.cursor()
 
-def get_db_connection():
-    connection = psycopg2.connect(
-        host="c7u1tn6bvvsodf.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com",
-        database="d6b9d42581mu4q",
-        user="uc32k2255cear2",
-        password="p839f9606a12c43f8f3c34342ad804eaf5f7f5c7124b2b7a68a6538606aab29d0",
-        port="5432"
-    )
-    return connection
-
-
+# Создание таблицы для хранения информации о пользователях
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    first_name TEXT,
+    last_name TEXT,
+    subscription_type TEXT,
+    subscription_start_date TEXT,
+    subscription_status TEXT
+)
+''')
+conn.commit()
 
 # Команда /start - приветственное сообщение с кнопками "Получить доступ", "Личный кабинет", "Служба поддержки"
 @bot.message_handler(commands=['start'])
@@ -62,39 +63,29 @@ def send_welcome(message):
 
 def log_interacted_user(user_id):
     """Записываем пользователя, который взаимодействовал с ботом, но не купил подписку"""
-    connection = get_db_connection()
+    connection = sqlite3.connect("C:\\Users\\anm24\\Desktop\\test\\interacted_users.db")
     cursor = connection.cursor()
     
     try:
         # Вставляем пользователя, если он еще не существует
-        cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,))
+        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
         connection.commit()
-    except psycopg2.IntegrityError as e:
+        
+    except sqlite3.IntegrityError as e:
         logging.error(f"Integrity error occurred: {e}")
+        
     finally:
         connection.close()
 
-
-
-
-
-
 def create_interacted_users_db():
     """Создаем базу данных для пользователей, которые взаимодействовали с ботом, но не купили подписку"""
-    connection = get_db_connection()
+    connection = sqlite3.connect("C:\\Users\\anm24\\Desktop\\test\\interacted_users.db")
     cursor = connection.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id SERIAL PRIMARY KEY,
-            first_name VARCHAR(100),
-            last_name VARCHAR(100),
-            subscription_type VARCHAR(50),
-            subscription_start_date TIMESTAMP,
-            subscription_status VARCHAR(20)
-        );
-    ''')
-
+    
+    # Создаем таблицу, если она не существует
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY
+                    )''')
     connection.commit()
     connection.close()
 
@@ -104,9 +95,9 @@ create_interacted_users_db()
 
 
 
-def get_interacted_users():
+def get_interacted_users(db_paths):
     """Функция для получения всех пользователей, которые взаимодействовали с ботом"""
-    connection = get_db_connection()
+    connection = sqlite3.connect(db_paths)
     cursor = connection.cursor()
     
     cursor.execute("SELECT user_id FROM users")
@@ -116,7 +107,6 @@ def get_interacted_users():
     
     # Возвращаем список user_id
     return [user[0] for user in users]
-
 
 def send_message_to_interacted_users(message, db_paths):
     """Функция для рассылки сообщения пользователям, которые взаимодействовали с ботом, но не купили подписку"""
@@ -171,21 +161,11 @@ def choose_subscription(call):
 def handle_subscription_choice(call):
     user_id = call.message.chat.id
     chosen_subscription = call.data
-    conn = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = conn.cursor() 
 
     # Сохраняем тип подписки и дату начала
-    cursor.execute('''
-        INSERT INTO users (user_id, subscription_type, subscription_start_date, subscription_status)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (user_id) 
-        DO UPDATE SET subscription_type = EXCLUDED.subscription_type, 
-                      subscription_start_date = EXCLUDED.subscription_start_date,
-                      subscription_status = EXCLUDED.subscription_status
-    ''', (user_id, chosen_subscription, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Ожидание оплаты'))
-    
-    conn.commit()  # Подтверждаем изменения
-    conn.close()  # Закрываем подключение
+    cursor.execute('REPLACE INTO users (user_id, subscription_type, subscription_start_date, subscription_status) VALUES (?, ?, ?, ?)', 
+                   (user_id, chosen_subscription, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Ожидание оплаты'))
+    conn.commit()
 
     # Запрос имени и фамилии для завершения
     question = bot.send_message(user_id, "😊Пожалуйста, введите ваше имя:")
@@ -207,19 +187,11 @@ def ask_last_name(message, chosen_subscription, prev_message_id):
 def save_user_data(message, first_name, subscription_type, prev_message_id):
     last_name = message.text
     user_id = message.chat.id
-    connection = get_db_connection()
-    cursor = connection.cursor()
 
-
-    cursor.execute('''
-        UPDATE users
-        SET first_name = %s, last_name = %s, subscription_type = %s, subscription_start_date = NOW(), subscription_status = 'Ожидание оплаты'
-        WHERE user_id = %s
-    ''', (first_name, last_name, subscription_type, user_id))
-
-    connection.commit()
-    connection.close()
-
+    # Обновляем запись о пользователе в базе данных
+    cursor.execute('UPDATE users SET first_name = ?, last_name = ? WHERE user_id = ?', 
+                   (first_name, last_name, user_id))
+    conn.commit()
 
     # Словарь с ценами для разных типов подписки
     subscription_prices = {
@@ -255,14 +227,8 @@ def save_user_data(message, first_name, subscription_type, prev_message_id):
 # Логика личного кабинета
 def show_account(message):
     user_id = message.chat.id
-    connection = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = connection.cursor()  # Создаем курсор
-
-    # Исправленный SQL-запрос
-    cursor.execute('SELECT subscription_type, subscription_start_date, subscription_status FROM users WHERE user_id = %s', (user_id,))
+    cursor.execute('SELECT subscription_type, subscription_start_date, subscription_status FROM users WHERE user_id = ?', (user_id,))
     user_info = cursor.fetchone()
-
-    connection.close()  # Закрываем подключение
 
     if user_info:
         subscription_type, subscription_start_date, subscription_status = user_info
@@ -301,7 +267,8 @@ def show_account(message):
                 status_message = (f"⚠️ Ваша подписка на {subscription_type} истекла.\n"
                                   f"🔖 Дата начала: {start_date_str}\n"
                                   f"📆 Дата окончания: {end_date_str}.")
-            
+
+            # Кнопки "Продлить подписку", "Отменить подписку", "Назад"
             markup = types.InlineKeyboardMarkup()
             extend_button = types.InlineKeyboardButton("🔄 Продлить подписку", callback_data="extend_subscription")
             cancel_button = types.InlineKeyboardButton("❌ Отменить подписку", callback_data="cancel_subscription")
@@ -314,10 +281,13 @@ def show_account(message):
             markup = types.InlineKeyboardMarkup()
             back_button = types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")
             access_button = types.InlineKeyboardButton("🔓 Получить доступ", callback_data="get_access")
+
+
             markup.add(back_button, access_button)
 
-            bot.send_message(user_id, "🚫 У вас нет активной подписки.🔑 Хотите получить доступ?", reply_markup=markup)
+            msg = bot.send_message(user_id, "🚫 У вас нет активной подписки.🔑 Хотите получить доступ?", reply_markup=markup)
     else:
+        # Если нет подписки
         markup = types.InlineKeyboardMarkup()
         access_button = types.InlineKeyboardButton("Получить доступ", callback_data="get_access")
         markup.add(access_button)
@@ -339,11 +309,7 @@ def handle_account_actions(call):
 # Логика продления подписки
 def extend_subscription(call):
     user_id = call.message.chat.id
-    connection = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = connection.cursor() 
-    
-    # Используем %s для подстановки значений в SQL-запрос
-    cursor.execute('SELECT subscription_type, subscription_start_date FROM users WHERE user_id = %s', (user_id,))
+    cursor.execute('SELECT subscription_type, subscription_start_date FROM users WHERE user_id = ?', (user_id,))
     user_info = cursor.fetchone()
 
     if user_info:
@@ -375,18 +341,13 @@ def extend_subscription(call):
         markup.add(one_month, six_months, twelve_months)
         bot.send_message(call.message.chat.id, f"⏳ У вас осталось {days_remaining} дней по текущей подписке.\n📅 Выберите тип продления:", reply_markup=markup)
 
-    connection.close()  # Закрываем соединение с базой данных
-
-
 @bot.callback_query_handler(func=lambda call: call.data in ["1 месяц", "6 месяцев", "12 месяцев"])
 def handle_extension_choice(call):
     user_id = call.message.chat.id
     chosen_subscription = call.data
-    conn = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = conn.cursor() 
 
     # Получаем информацию о текущей подписке
-    cursor.execute('SELECT subscription_type, subscription_start_date FROM users WHERE user_id = %s', (user_id,))
+    cursor.execute('SELECT subscription_type, subscription_start_date FROM users WHERE user_id = ?', (user_id,))
     user_info = cursor.fetchone()
 
     if user_info:
@@ -419,24 +380,18 @@ def handle_extension_choice(call):
         new_start_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # Обновляем запись в базе данных
-        cursor.execute('UPDATE users SET subscription_start_date = %s, subscription_type = %s WHERE user_id = %s', 
+        cursor.execute('UPDATE users SET subscription_start_date = ?, subscription_type = ? WHERE user_id = ?', 
                        (new_start_date, chosen_subscription, user_id))
         conn.commit()
 
         bot.send_message(user_id, f"✅ Продление подписки успешно! 🎉\n 📅 Ваша подписка продлена на {extra_days} дней.")
-
-    conn.close()  # Закрываем соединение с базой данных
 
 
 # Логика отмены подписки
 # Логика отмены подписки
 def cancel_subscription(call):
     user_id = call.message.chat.id
-    connection = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = connection.cursor() 
-
-    # Исправление: заменяем ? на %s
-    cursor.execute('SELECT subscription_start_date FROM users WHERE user_id = %s', (user_id,))
+    cursor.execute('SELECT subscription_start_date FROM users WHERE user_id = ?', (user_id,))
     subscription_start_date = cursor.fetchone()[0]
     
     today = datetime.now()
@@ -450,8 +405,6 @@ def cancel_subscription(call):
         # Запрос данных для возврата
         question = bot.send_message(user_id, "❓ Пожалуйста, укажите причину отмены подписки.")
         bot.register_next_step_handler(question, process_refund_reason, question.message_id)
-
-    connection.close()  # Закрываем соединение с БД
 
 # Запрос причины отмены подписки
 def process_refund_reason(message, question_message_id):
@@ -493,21 +446,16 @@ def process_refund_details(message, reason, question_message_id):
 # Обработка подтверждения отмены подписки админом
 @bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_cancel_'))
 def handle_cancel_confirmation(call):
-    conn = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = conn.cursor() 
     user_id = call.data.split('_')[-1]
 
     # Обнуление подписки пользователя
-    cursor.execute('UPDATE users SET subscription_status = %s, subscription_start_date = %s WHERE user_id = %s',
+    cursor.execute('UPDATE users SET subscription_status = ?, subscription_start_date = ? WHERE user_id = ?',
                    ('Отменена', None, user_id))
     conn.commit()
 
     # Уведомление пользователя об успешной отмене
     bot.send_message(user_id, "Ваша подписка успешно отменена и обнулена.")
     bot.send_message(ADMIN_ID, f"✅ Подписка пользователя {user_id} успешно отменена.")
-
-    conn.close()  # Закрываем соединение с БД
-
 
     # Сообщение администратору остается, удаление не происходит.
 
@@ -517,14 +465,10 @@ from telebot import types
 @bot.message_handler(content_types=['photo', 'document'])
 def handle_receipt(message):
     user_id = message.chat.id
-    connection = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = connection.cursor()  # Создаем курсор
 
-    # Исправленный SQL-запрос с использованием %s
-    cursor.execute('SELECT first_name, last_name, subscription_type FROM users WHERE user_id = %s', (user_id,))
+    # Получаем информацию о пользователе
+    cursor.execute('SELECT first_name, last_name, subscription_type FROM users WHERE user_id = ?', (user_id,))
     user_info = cursor.fetchone()
-
-    connection.close()  # Закрываем подключение
 
     if user_info:
         first_name, last_name, subscription_type = user_info
@@ -548,7 +492,8 @@ def handle_receipt(message):
     markup.add(confirm_button, decline_button)
     
     bot.send_message(ADMIN_ID, f"Пользователь {first_name} {last_name} ({user_id}) отправил чек на подписку: {subscription_type}. Подтвердите оплату или отклоните.", reply_markup=markup)
-    
+
+    # Удаляем сообщение с чеком после обработки
     bot.delete_message(user_id, message.message_id)
 
     # Проверяем, если есть сообщение, на которое идет ответ, и оно не пустое
@@ -557,13 +502,10 @@ def handle_receipt(message):
 
 
 
-
 # Обработка подтверждения или отклонения оплаты админом
 @bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_') or call.data.startswith('decline_'))
 def handle_admin_action(call):
     user_id = call.data.split('_')[-1]
-    conn = get_db_connection()  # Устанавливаем подключение к БД
-    cursor = conn.cursor() 
 
     # invite_link = create_one_time_invite_link()
     invite_link = "https://t.me/TANYA_EVERYTHING"
@@ -571,7 +513,7 @@ def handle_admin_action(call):
 
     if call.data.startswith('confirm_'):
         # Подтверждение оплаты
-        cursor.execute('UPDATE users SET subscription_status = %s WHERE user_id = %s', ('Подтверждено', user_id))
+        cursor.execute('UPDATE users SET subscription_status = ? WHERE user_id = ?', ('Подтверждено', user_id))
         conn.commit()
         
         # Отправка ссылки на канал пользователю
@@ -583,9 +525,6 @@ def handle_admin_action(call):
         bot.send_message(call.message.chat.id, "Пожалуйста, укажите причину отклонения.")
         bot.register_next_step_handler(call.message, lambda msg: handle_decline_reason(msg, user_id))
 
-    conn.close()  # Закрываем подключение к базе данных
-
-
 def handle_decline_reason(message, user_id):
     reason = message.text
     bot.send_message(user_id, f"Ваша оплата была отклонена по следующей причине: {reason}.")
@@ -593,13 +532,13 @@ def handle_decline_reason(message, user_id):
 
 db_path = "C:\\Users\\anm24\\Desktop\\test\\subscriptions.db"    
 
-def get_subscribed_users():
-    """Функция для получения всех пользователей с активной подпиской в PostgreSQL"""
-    connection = get_db_connection()  # Подключение к PostgreSQL
+def get_subscribed_users(db_path):
+    """Функция для получения всех пользователей с активной подпиской"""
+    connection = sqlite3.connect(db_path)
     cursor = connection.cursor()
     
-    # Запрос пользователей с активной подпиской
-    cursor.execute("SELECT user_id FROM users WHERE subscription_status = %s", ('Подтверждено',))
+    # Предполагаем, что в таблице users есть поле subscription_status (1 - подписан, 0 - нет)
+    cursor.execute("SELECT user_id FROM users WHERE subscription_status = 'Подтверждено'")
     users = cursor.fetchall()
     
     connection.close()
@@ -607,17 +546,15 @@ def get_subscribed_users():
     # Возвращаем список user_id
     return [user[0] for user in users]
 
-
-def send_message_to_all_subscribers(message):
-    """Функция для рассылки сообщения всем подписанным пользователям в PostgreSQL"""
-    users = get_subscribed_users()  # Получаем подписанных пользователей
+def send_message_to_all_subscribers(message, db_path):
+    """Функция для рассылки сообщения всем подписанным пользователям"""
+    users = get_subscribed_users(db_path)
     
     for user_id in users:
         try:
-            bot.send_message(user_id, message, parse_mode='Markdown')
+            bot.send_message(user_id, message)
         except Exception as e:
             print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
 
 # Команда для рассылки сообщений администратором
 @bot.message_handler(func=lambda message: message.text == "📨 Отправить рассылку")
@@ -708,13 +645,13 @@ def send_message_to_all_subscribers(message, db_path):
 
 db_path = "C:\\Users\\anm24\\Desktop\\test\\subscriptions.db"    
 
-def get_unsubscribed_users():
-    """Функция для получения всех пользователей с отмененной подпиской в PostgreSQL"""
-    connection = get_db_connection()  # Подключение к PostgreSQL
+def get_unsubscribed_users(db_path):
+    """Функция для получения всех пользователей с отмененной подпиской"""
+    connection = sqlite3.connect(db_path)
     cursor = connection.cursor()
     
-    # Запрос пользователей с отмененной подпиской
-    cursor.execute("SELECT user_id FROM users WHERE subscription_status = %s", ('Отменена',))
+    # Предполагаем, что в таблице users есть поле subscription_status ('Подтверждено' или 'Отменена')
+    cursor.execute("SELECT user_id FROM users WHERE subscription_status = 'Отменена'")
     users = cursor.fetchall()
     
     connection.close()
@@ -722,17 +659,15 @@ def get_unsubscribed_users():
     # Возвращаем список user_id
     return [user[0] for user in users]
 
-
-def send_message_to_unsubscribed_users(message):
-    """Функция для рассылки сообщения всем пользователям с отмененной подпиской в PostgreSQL"""
-    users = get_unsubscribed_users()  # Получаем отписанных пользователей
+def send_message_to_unsubscribed_users(message, db_path):
+    """Функция для рассылки сообщения всем пользователям с отмененной подпиской"""
+    users = get_unsubscribed_users(db_path)
     
     for user_id in users:
         try:
-            bot.send_message(user_id, message, parse_mode='Markdown')
+            bot.send_message(user_id, message)
         except Exception as e:
             print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
 
 # Команда для рассылки сообщений пользователям с отмененной подпиской администратором
 @bot.message_handler(func=lambda message: message.text == "📨 Отправить рассылку отмененным")
@@ -819,13 +754,18 @@ def send_message_to_unsubscribed_users(message, db_path):
             print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 
+
+
+
+
+
+
+
+
 def check_subscription_expiry():
     while True:
-        connection = get_db_connection()
-        cursor = connection.cursor()
-
-        # Исправленный SQL-запрос с одинарными кавычками вокруг строки 'Подтверждено'
-        cursor.execute('SELECT user_id, subscription_type, subscription_start_date FROM users WHERE subscription_status = %s', ('Подтверждено',))
+        # Извлекаем пользователей с активной подпиской
+        cursor.execute('SELECT user_id, subscription_type, subscription_start_date FROM users WHERE subscription_status = "Подтверждено"')
         users = cursor.fetchall()
 
         if users:
@@ -857,11 +797,8 @@ def check_subscription_expiry():
                 elif days_remaining == 0 and hours_remaining == 1:
                     send_expiry_warning(user_id, hours_remaining, time_type="hour")
 
-        connection.close()
-
         # Проверка раз в час
         time.sleep(3600)
-
 
 # Функция для отправки уведомлений
 def send_expiry_warning(user_id, time_remaining, time_type="days"):
