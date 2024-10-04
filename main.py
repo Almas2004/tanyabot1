@@ -6,6 +6,7 @@ import threading
 import logging
 import time
 import psycopg2
+import psycopg2 as up
 
 import os
 
@@ -20,16 +21,16 @@ bot = telebot.TeleBot(API_TOKEN)
 
 
 def get_db_connection():
+    up.uses_netloc.append("postgres")
+    url = up.urlparse(os.environ["DATABASE_URL"])
     connection = psycopg2.connect(
-        host="c7u1tn6bvvsodf.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com",
-        database="d6b9d42581mu4q",
-        user="uc32k2255cear2",
-        password="p839f9606a12c43f8f3c34342ad804eaf5f7f5c7124b2b7a68a6538606aab29d0",
-        port="5432"
+        database=url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port
     )
     return connection
-
-
 
 # Команда /start - приветственное сообщение с кнопками "Получить доступ", "Личный кабинет", "Служба поддержки"
 @bot.message_handler(commands=['start'])
